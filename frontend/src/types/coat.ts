@@ -9,6 +9,9 @@ export type PaintType = 'raw' | 'color' | 'topcoat';
 /** 道次状态：待涂 / 已涂 / 待打磨 / 已完成 */
 export type CoatState = 'todo' | 'coated' | 'toPolish' | 'done';
 
+/** 领用状态：有效 / 已退回（缸结皮作废后，未涂道次的领用退回待涂） */
+export type DrawState = 'valid' | 'returned';
+
 export interface Coat {
   id: string;
   /** 所属胎体 id */
@@ -27,6 +30,16 @@ export interface Coat {
   state: CoatState;
   /** 荫房判定异常时回写的「待复检」标记 */
   needRecheck: boolean;
+  /** 领用的调漆缸 id；null 表示未领用；旧数据回填不上时为历史缸号 vat_hist */
+  vatId: string | null;
+  /** 本次领用用掉的道数（按缸里当下余量扣） */
+  drawCoats: number;
+  /** 领用状态 */
+  drawState: DrawState;
+  /** 缸容量用满后在等漆队列中排队 */
+  awaitVat: boolean;
+  /** 等漆缺口：还差几道 */
+  shortageCoats: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -54,6 +67,11 @@ export const COAT_STATE_COLOR: Record<CoatState, string> = {
 };
 
 export const COAT_STATE_FLOW: readonly CoatState[] = ['todo', 'coated', 'toPolish', 'done'];
+
+export const DRAW_STATE_LABEL: Record<DrawState, string> = {
+  valid: '有效',
+  returned: '已退回',
+};
 
 export const PAINT_TYPE_OPTIONS: ReadonlyArray<{ value: PaintType; label: string }> = [
   { value: 'raw', label: '生漆' },
@@ -91,5 +109,22 @@ export function createEmptyCoatDraft(bodyId: string, seq: number): CoatDraft {
     thicknessUm: 40,
     state: 'todo',
     needRecheck: false,
+    vatId: null,
+    drawCoats: 1,
+    drawState: 'valid',
+    awaitVat: false,
+    shortageCoats: 0,
+  };
+}
+
+/** 旧备份 / 升级前的道次缺少领用字段时补默认值（v3 迁移与导入共用） */
+export function normalizeCoat(coat: Coat): Coat {
+  return {
+    ...coat,
+    vatId: coat.vatId ?? null,
+    drawCoats: typeof coat.drawCoats === 'number' && coat.drawCoats > 0 ? coat.drawCoats : 1,
+    drawState: coat.drawState === 'returned' ? 'returned' : 'valid',
+    awaitVat: typeof coat.awaitVat === 'boolean' ? coat.awaitVat : false,
+    shortageCoats: typeof coat.shortageCoats === 'number' ? coat.shortageCoats : 0,
   };
 }

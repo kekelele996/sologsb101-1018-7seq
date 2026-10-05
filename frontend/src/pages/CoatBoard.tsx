@@ -25,6 +25,7 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   DeleteOutlined,
   EditOutlined,
+  GoldOutlined,
   HolderOutlined,
   PlusOutlined,
   ThunderboltOutlined,
@@ -33,9 +34,11 @@ import EmptyPanel from '@/components/common/EmptyPanel';
 import FilterBar, { useFilterQuery, type FilterSelectConfig } from '@/components/common/FilterBar';
 import StatBadge from '@/components/common/StatBadge';
 import StageTag from '@/components/common/StageTag';
+import VatDrawModal from '@/components/common/VatDrawModal';
 import { useCoatProgress } from '@/hooks/useCoatProgress';
 import { useBodyStore } from '@/stores/bodyStore';
 import { useCoatStore } from '@/stores/coatStore';
+import { useVatStore, type DrawResult } from '@/stores/vatStore';
 import {
   COAT_STATE_LABEL,
   COAT_STATE_OPTIONS,
@@ -48,6 +51,7 @@ import {
   type CoatState,
   type PaintType,
 } from '@/types/coat';
+import { HIST_VAT_ID } from '@/types/vat';
 import { BODY_SHAPE_LABEL } from '@/types/body';
 import { suggestIntervalHours } from '@/utils/humidity';
 
@@ -74,12 +78,14 @@ export default function CoatBoard() {
   const reorderCoats = useCoatStore((state) => state.reorderCoats);
   const nextSeq = useCoatStore((state) => state.nextSeq);
   const suggestForBody = useCoatStore((state) => state.suggestForBody);
+  const vats = useVatStore((state) => state.vats);
 
   const { progressOf, currentCoatText, totals } = useCoatProgress();
   const url = useFilterQuery(FILTER_KEYS);
 
   const [editing, setEditing] = useState<Coat | null>(null);
   const [open, setOpen] = useState(false);
+  const [drawCoat, setDrawCoat] = useState<Coat | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchPaint, setBatchPaint] = useState<PaintType>('color');
   const [batchState, setBatchState] = useState<CoatState>('coated');
@@ -146,15 +152,28 @@ export default function CoatBoard() {
 
   const submit = async (): Promise<void> => {
     const values = await form.validateFields();
-    const payload: CoatDraft = { ...values };
     if (editing) {
-      await updateCoat(editing.id, payload);
-      message.success(`已更新第 ${payload.seq} 道工序`);
+      await updateCoat(editing.id, { ...values });
+      message.success(`已更新第 ${values.seq} 道工序`);
     } else {
+      // 表单未覆盖的领用字段补默认值
+      const payload: CoatDraft = { ...createEmptyCoatDraft(bodyId, values.seq), ...values };
       await createCoat(payload);
       message.success(`已新增第 ${payload.seq} 道工序`);
     }
     setOpen(false);
+  };
+
+  /** 领用结果提示：成功 / 余量不足已排队 / 失败 */
+  const handleDrawDone = (result: DrawResult): void => {
+    if (result.kind === 'ok') message.success(`已领用 ${result.vatNo}，按缸里当下余量扣减`);
+    else if (result.kind === 'queued')
+      message.warning(
+        result.vatNo
+          ? `缸 ${result.vatNo} 余量不足，已排队等下一缸，还差 ${result.shortage} 道`
+          : `暂无在用缸，已排队等下一缸，还差 ${result.shortage} 道`,
+      );
+    else message.error(result.message);
   };
 
   /** 拖拽重排：按落点重排并落库重编号 */
@@ -222,6 +241,30 @@ export default function CoatBoard() {
     { title: '色名', dataIndex: 'colorName', width: 120 },
     { title: '涂刷日期', dataIndex: 'coatDate', width: 130, sorter: (a, b) => a.coatDate.localeCompare(b.coatDate) },
     {
+      title: '领用漆缸',
+      key: 'vat',
+      width: 170,
+      render: (_value, record) => {
+        if (record.awaitVat) return <Tag color="#c9963c">等漆中 · 还差 {record.shortageCoats} 道</Tag>;
+        if (!record.vatId) return <Typography.Text type="secondary">未领用</Typography.Text>;
+        const vatNo = vats.find((vat) => vat.id === record.vatId)?.vatNo ?? (record.vatId === HIST_VAT_ID ? 'HIST' : '？');
+        if (record.drawState === 'returned') {
+          return (
+            <Space size={4}>
+              <Tag style={{ textDecoration: 'line-through' }}>{vatNo}</Tag>
+              <Tag color="#b03a2e">已退回</Tag>
+            </Space>
+          );
+        }
+        return (
+          <Space size={4}>
+            <Tag color={record.vatId === HIST_VAT_ID ? '#c9963c' : '#8c2f1f'}>{vatNo}</Tag>
+            <Typography.Text type="secondary">×{record.drawCoats} 道</Typography.Text>
+          </Space>
+        );
+      },
+    },
+    {
       title: '湿膜厚度',
       dataIndex: 'thicknessUm',
       width: 120,
@@ -230,12 +273,17 @@ export default function CoatBoard() {
     {
       title: '操作',
       key: 'action',
-      width: 220,
+      width: 280,
       render: (_value, record) => (
         <Space size={4} wrap>
           <Button size="small" type="link" onClick={() => void handleAdvance(record)}>
             推进状态
           </Button>
+          {record.state === 'todo' ? (
+            <Button size="small" type="link" icon={<GoldOutlined />} onClick={() => setDrawCoat(record)}>
+              领用
+            </Button>
+          ) : null}
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>
             编辑
           </Button>
@@ -285,6 +333,12 @@ export default function CoatBoard() {
         <StatBadge label="当前道次" value={stat?.currentSeq ? `第 ${stat.currentSeq} 道` : '已完工'} tone="warning" />
         <StatBadge label="全局待复检" value={totals.recheck} suffix="道" tone="danger" />
         <StatBadge label="荫干等待" value={stat?.dryingHours ?? 0} suffix="小时" tone="info" />
+        <StatBadge
+          label="等漆道次"
+          value={coats.filter((coat) => coat.awaitVat && coat.state === 'todo').length}
+          suffix="道"
+          tone="warning"
+        />
       </div>
 
       {suggestion && suggestion.sourceCode ? (
@@ -460,6 +514,8 @@ export default function CoatBoard() {
           />
         </Form>
       </Modal>
+
+      <VatDrawModal open={drawCoat !== null} coat={drawCoat} onClose={() => setDrawCoat(null)} onDone={handleDrawDone} />
     </div>
   );
 }

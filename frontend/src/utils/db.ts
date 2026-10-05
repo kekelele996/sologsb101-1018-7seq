@@ -1,23 +1,28 @@
 /**
  * IndexedDB 持久化层（Dexie 封装）
- * - 数据结构版本号与升级迁移逻辑（v1 → v2：Coat 增加 paintType 索引并回填历史记录）
- * - 六张业务表的增删改查与整库导入导出
+ * - 数据结构版本号与升级迁移逻辑（v1 → v2：Coat 增加 paintType 索引并回填历史记录；
+ *   v2 → v3：新增调漆缸与对账挂起单两张表，Coat 增加领用字段并按漆种与涂刷日期回填缸号）
+ * - 八张业务表的增删改查与整库导入导出
  * - 首次打开自动播种互相引用的演示数据（幂等）
  * 纯前端应用：不依赖任何后端服务或数据库。
  */
 import Dexie, { type Table } from 'dexie';
 import type { Body } from '@/types/body';
 import type { Coat, PaintType } from '@/types/coat';
+import { normalizeCoat } from '@/types/coat';
 import type { Room } from '@/types/room';
 import type { Polish } from '@/types/polish';
 import type { Inlay } from '@/types/inlay';
 import type { Inspect } from '@/types/inspect';
+import type { Vat } from '@/types/vat';
+import { backfillCoatVats, createHistVat, HIST_VAT_ID } from '@/types/vat';
+import type { ReconItem } from '@/types/recon';
 
 /** 数据库名（README 与导出文件均使用该名称） */
 export const DB_NAME = 'gblacquer';
 
 /** 当前数据结构版本号 */
-export const DB_SCHEMA_VERSION = 2;
+export const DB_SCHEMA_VERSION = 3;
 
 /** localStorage 侧少量元数据键 */
 export const LS_KEYS = {
@@ -84,6 +89,8 @@ class LacquerDatabase extends Dexie {
   polishes!: Table<Polish, string>;
   inlays!: Table<Inlay, string>;
   inspects!: Table<Inspect, string>;
+  vats!: Table<Vat, string>;
+  recons!: Table<ReconItem, string>;
 
   constructor() {
     super(DB_NAME);
@@ -99,7 +106,7 @@ class LacquerDatabase extends Dexie {
     });
 
     // v2：Coat 增加 paintType 索引；历史记录缺少 paintType 时按「生漆」回填
-    this.version(DB_SCHEMA_VERSION)
+    this.version(2)
       .stores({
         bodies: 'id, code, material, shape, state, updatedAt',
         coats: 'id, bodyId, seq, paintType, state, needRecheck, updatedAt',
@@ -119,13 +126,52 @@ class LacquerDatabase extends Dexie {
             if (typeof coat.thicknessUm !== 'number') coat.thicknessUm = 40;
           });
       });
+
+    // v3：新增调漆缸 vats 与对账挂起单 recons；Coat 增加领用字段与 vatId 索引，
+    // 旧道次没记缸号的按漆种与涂刷日期回填，填不上的标历史缸号
+    this.version(DB_SCHEMA_VERSION)
+      .stores({
+        bodies: 'id, code, material, shape, state, updatedAt',
+        coats: 'id, bodyId, seq, paintType, vatId, state, needRecheck, updatedAt',
+        rooms: 'id, bodyId, date, verdict, updatedAt',
+        polishes: 'id, bodyId, seq, method, updatedAt',
+        inlays: 'id, bodyId, type, position, updatedAt',
+        inspects: 'id, bodyId, verdict, date, updatedAt',
+        vats: 'id, vatNo, paintType, state, mixedDate, updatedAt',
+        recons: 'id, vatId, state, updatedAt',
+      })
+      .upgrade(async (tx) => {
+        const coatsTable = tx.table<Coat>('coats');
+        // 先补领用字段默认值
+        await coatsTable
+          .toCollection()
+          .modify((coat) => {
+            Object.assign(coat, normalizeCoat(coat));
+          });
+        // 历史缸号占位（幂等），回填不上的道次挂此
+        await tx.table<Vat>('vats').put(createHistVat(Date.now()));
+        // 按漆种与涂刷日期回填缸号
+        const coats = await coatsTable.toArray();
+        const vats = await tx.table<Vat>('vats').toArray();
+        const patches = backfillCoatVats(coats, vats);
+        await Promise.all(patches.map((patch) => coatsTable.update(patch.id, { vatId: patch.vatId })));
+      });
   }
 }
 
 export const db = new LacquerDatabase();
 
-/** 六张业务表清单，事务中统一引用 */
-const TABLE_LIST = [db.bodies, db.coats, db.rooms, db.polishes, db.inlays, db.inspects];
+/** 八张业务表清单，事务中统一引用 */
+const TABLE_LIST = [
+  db.bodies,
+  db.coats,
+  db.rooms,
+  db.polishes,
+  db.inlays,
+  db.inspects,
+  db.vats,
+  db.recons,
+];
 
 /** 生成主键：短前缀 + 时间戳 + 随机串，避免多标签页写入冲突 */
 export function createId(prefix: string): string {
@@ -184,14 +230,26 @@ export async function seedDatabase(): Promise<void> {
   ];
 
   const coats: Coat[] = [
-    { id: 'coat_0101', bodyId: 'body_01', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-02', thicknessUm: 40, state: 'done', needRecheck: false, createdAt: now - 86400000 * 11, updatedAt: now - 86400000 * 10 },
-    { id: 'coat_0102', bodyId: 'body_01', seq: 2, paintType: 'color', colorName: '朱红', coatDate: '2026-03-06', thicknessUm: 45, state: 'toPolish', needRecheck: true, createdAt: now - 86400000 * 7, updatedAt: now - 86400000 * 2 },
-    { id: 'coat_0103', bodyId: 'body_01', seq: 3, paintType: 'topcoat', colorName: '推光本色', coatDate: '2026-03-12', thicknessUm: 30, state: 'todo', needRecheck: false, createdAt: now - 86400000 * 6, updatedAt: now - 86400000 * 6 },
-    { id: 'coat_0201', bodyId: 'body_02', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-03', thicknessUm: 35, state: 'done', needRecheck: false, createdAt: now - 86400000 * 8, updatedAt: now - 86400000 * 7 },
-    { id: 'coat_0202', bodyId: 'body_02', seq: 2, paintType: 'color', colorName: '赭石', coatDate: '2026-03-08', thicknessUm: 42, state: 'coated', needRecheck: true, createdAt: now - 86400000 * 5, updatedAt: now - 86400000 },
-    { id: 'coat_0301', bodyId: 'body_03', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-02-10', thicknessUm: 38, state: 'done', needRecheck: false, createdAt: now - 86400000 * 26, updatedAt: now - 86400000 * 25 },
-    { id: 'coat_0302', bodyId: 'body_03', seq: 2, paintType: 'color', colorName: '石绿', coatDate: '2026-02-18', thicknessUm: 44, state: 'done', needRecheck: false, createdAt: now - 86400000 * 20, updatedAt: now - 86400000 * 18 },
-    { id: 'coat_0303', bodyId: 'body_03', seq: 3, paintType: 'topcoat', colorName: '描金', coatDate: '2026-02-26', thicknessUm: 28, state: 'done', needRecheck: false, createdAt: now - 86400000 * 14, updatedAt: now - 86400000 * 4 },
+    // 播种道次模拟旧数据：vatId 一律为 null，落库后由 applyVatBackfill 按漆种与涂刷日期回填
+    { id: 'coat_0101', bodyId: 'body_01', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-02', thicknessUm: 40, state: 'done', needRecheck: false, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 11, updatedAt: now - 86400000 * 10 },
+    { id: 'coat_0102', bodyId: 'body_01', seq: 2, paintType: 'color', colorName: '朱红', coatDate: '2026-03-06', thicknessUm: 45, state: 'toPolish', needRecheck: true, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 7, updatedAt: now - 86400000 * 2 },
+    { id: 'coat_0103', bodyId: 'body_01', seq: 3, paintType: 'topcoat', colorName: '推光本色', coatDate: '2026-03-12', thicknessUm: 30, state: 'todo', needRecheck: false, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 6, updatedAt: now - 86400000 * 6 },
+    { id: 'coat_0201', bodyId: 'body_02', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-03-03', thicknessUm: 35, state: 'done', needRecheck: false, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 8, updatedAt: now - 86400000 * 7 },
+    { id: 'coat_0202', bodyId: 'body_02', seq: 2, paintType: 'color', colorName: '赭石', coatDate: '2026-03-08', thicknessUm: 42, state: 'coated', needRecheck: true, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 5, updatedAt: now - 86400000 },
+    { id: 'coat_0301', bodyId: 'body_03', seq: 1, paintType: 'raw', colorName: '漆黑', coatDate: '2026-02-10', thicknessUm: 38, state: 'done', needRecheck: false, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 26, updatedAt: now - 86400000 * 25 },
+    { id: 'coat_0302', bodyId: 'body_03', seq: 2, paintType: 'color', colorName: '石绿', coatDate: '2026-02-18', thicknessUm: 44, state: 'done', needRecheck: false, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 20, updatedAt: now - 86400000 * 18 },
+    { id: 'coat_0303', bodyId: 'body_03', seq: 3, paintType: 'topcoat', colorName: '描金', coatDate: '2026-02-26', thicknessUm: 28, state: 'done', needRecheck: false, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 14, updatedAt: now - 86400000 * 4 },
+    // 涂刷日期早于任何罩漆缸的调漆日期，回填时找不到缸，会标历史缸号 HIST
+    { id: 'coat_0304', bodyId: 'body_03', seq: 4, paintType: 'topcoat', colorName: '推光本色', coatDate: '2026-01-15', thicknessUm: 30, state: 'done', needRecheck: false, vatId: null, drawCoats: 1, drawState: 'valid', awaitVat: false, shortageCoats: 0, createdAt: now - 86400000 * 28, updatedAt: now - 86400000 * 28 },
+  ];
+
+  const vats: Vat[] = [
+    { id: 'vat_01', vatNo: 'G-2601', paintType: 'raw', formula: '净滤生漆，不加填料', capacityCoats: 4, mixedDate: '2026-02-01', state: 'scrapped', note: '立春所调，静置过久结皮作废', createdAt: now - 86400000 * 30, updatedAt: now - 86400000 * 12 },
+    { id: 'vat_02', vatNo: 'G-2602', paintType: 'color', formula: '朱砂粉调生漆 1:2', capacityCoats: 3, mixedDate: '2026-02-15', state: 'inUse', note: '', createdAt: now - 86400000 * 26, updatedAt: now - 86400000 * 20 },
+    { id: 'vat_03', vatNo: 'G-2603', paintType: 'topcoat', formula: '透明罩漆加熟桐油 3:1', capacityCoats: 2, mixedDate: '2026-02-20', state: 'inUse', note: '', createdAt: now - 86400000 * 22, updatedAt: now - 86400000 * 14 },
+    { id: 'vat_04', vatNo: 'G-2604', paintType: 'raw', formula: '净滤生漆，不加填料', capacityCoats: 6, mixedDate: '2026-03-01', state: 'inUse', note: '', createdAt: now - 86400000 * 12, updatedAt: now - 86400000 * 7 },
+    { id: 'vat_05', vatNo: 'G-2605', paintType: 'color', formula: '赭石粉调生漆 1:2', capacityCoats: 2, mixedDate: '2026-03-05', state: 'usedUp', note: '容量已髹完', createdAt: now - 86400000 * 9, updatedAt: now - 86400000 * 2 },
+    createHistVat(now - 86400000 * 30),
   ];
 
   const rooms: Room[] = [
@@ -227,7 +285,27 @@ export async function seedDatabase(): Promise<void> {
     await db.polishes.bulkPut(polishes);
     await db.inlays.bulkPut(inlays);
     await db.inspects.bulkPut(inspects);
+    await db.vats.bulkPut(vats);
   });
+  // 播种道次模拟旧数据（未记缸号），落库后按漆种与涂刷日期回填，填不上的标历史缸号
+  await applyVatBackfill();
+}
+
+/**
+ * 旧道次回填缸号：按漆种与涂刷日期匹配调漆缸，填不上的标历史缸号。
+ * 播种与 v3 升级迁移共用同一套规则（backfillCoatVats），返回回填道次数。
+ */
+export async function applyVatBackfill(): Promise<number> {
+  const [coats, vats] = await Promise.all([db.coats.toArray(), db.vats.toArray()]);
+  const patches = backfillCoatVats(coats, vats);
+  if (patches.length === 0) return 0;
+  const now = Date.now();
+  await db.transaction('rw', [db.coats], async () => {
+    await Promise.all(
+      patches.map((patch) => db.coats.update(patch.id, { vatId: patch.vatId, updatedAt: now } as never)),
+    );
+  });
+  return patches.length;
 }
 
 /* ------------------------------ 整库导入导出 ------------------------------ */
@@ -242,16 +320,20 @@ export interface LacquerSnapshot {
   polishes: Polish[];
   inlays: Inlay[];
   inspects: Inspect[];
+  vats: Vat[];
+  recons: ReconItem[];
 }
 
 export async function exportSnapshot(): Promise<LacquerSnapshot> {
-  const [bodies, coats, rooms, polishes, inlays, inspects] = await Promise.all([
+  const [bodies, coats, rooms, polishes, inlays, inspects, vats, recons] = await Promise.all([
     db.bodies.toArray(),
     db.coats.toArray(),
     db.rooms.toArray(),
     db.polishes.toArray(),
     db.inlays.toArray(),
     db.inspects.toArray(),
+    db.vats.toArray(),
+    db.recons.toArray(),
   ]);
   return {
     app: DB_NAME,
@@ -263,10 +345,12 @@ export async function exportSnapshot(): Promise<LacquerSnapshot> {
     polishes,
     inlays,
     inspects,
+    vats,
+    recons,
   };
 }
 
-/** 校验导入文件结构，返回错误文案（空串表示通过） */
+/** 校验导入文件结构，返回错误文案（空串表示通过）；vats / recons 为 v3 新增，旧备份缺省视为空 */
 export function validateSnapshot(input: unknown): string {
   if (typeof input !== 'object' || input === null) return '文件内容不是合法的 JSON 对象';
   const snapshot = input as Partial<LacquerSnapshot>;
@@ -275,18 +359,29 @@ export function validateSnapshot(input: unknown): string {
   for (const key of keys) {
     if (!Array.isArray(snapshot[key])) return `备份文件缺少 ${String(key)} 集合`;
   }
+  const optional: Array<keyof LacquerSnapshot> = ['vats', 'recons'];
+  for (const key of optional) {
+    if (snapshot[key] !== undefined && !Array.isArray(snapshot[key])) return `备份文件 ${String(key)} 集合格式不正确`;
+  }
   return '';
 }
 
 export async function importSnapshot(snapshot: LacquerSnapshot): Promise<void> {
   await clearAllTables();
+  // 旧备份（v2 及以前）没有调漆缸与对账单，缺省补空；道次补领用字段默认值
+  const coats = snapshot.coats.map((coat) => normalizeCoat(coat));
+  const vats = snapshot.vats ?? [];
+  if (!vats.some((vat) => vat.id === HIST_VAT_ID)) vats.push(createHistVat(Date.now()));
+  const recons = snapshot.recons ?? [];
   await db.transaction('rw', TABLE_LIST, async () => {
     await db.bodies.bulkPut(snapshot.bodies);
-    await db.coats.bulkPut(snapshot.coats);
+    await db.coats.bulkPut(coats);
     await db.rooms.bulkPut(snapshot.rooms);
     await db.polishes.bulkPut(snapshot.polishes);
     await db.inlays.bulkPut(snapshot.inlays);
     await db.inspects.bulkPut(snapshot.inspects);
+    await db.vats.bulkPut(vats);
+    await db.recons.bulkPut(recons);
   });
 }
 
@@ -299,6 +394,8 @@ export async function clearAllTables(): Promise<void> {
       db.polishes.clear(),
       db.inlays.clear(),
       db.inspects.clear(),
+      db.vats.clear(),
+      db.recons.clear(),
     ]);
   });
 }
@@ -310,15 +407,17 @@ export async function resetDatabase(): Promise<void> {
 }
 
 export async function countAll(): Promise<Record<string, number>> {
-  const [bodies, coats, rooms, polishes, inlays, inspects] = await Promise.all([
+  const [bodies, coats, rooms, polishes, inlays, inspects, vats, recons] = await Promise.all([
     db.bodies.count(),
     db.coats.count(),
     db.rooms.count(),
     db.polishes.count(),
     db.inlays.count(),
     db.inspects.count(),
+    db.vats.count(),
+    db.recons.count(),
   ]);
-  return { bodies, coats, rooms, polishes, inlays, inspects };
+  return { bodies, coats, rooms, polishes, inlays, inspects, vats, recons };
 }
 
 /* ------------------------------ 级联删除 ------------------------------ */

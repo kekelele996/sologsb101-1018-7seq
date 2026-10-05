@@ -1,6 +1,6 @@
 /**
- * 路由表（与提示词逐字一致）
- * /bodies、/coats、/rooms、/polish、/inlays、/export
+ * 路由表
+ * /bodies、/vats、/coats、/rooms、/polish、/inlays、/export
  * 页面按路由懒加载，构建时自动分包。
  */
 import { Suspense, lazy, type ReactNode } from 'react';
@@ -9,6 +9,7 @@ import { Skeleton } from 'antd';
 import App from '../App';
 
 const BodyList = lazy(() => import('../pages/BodyList'));
+const VatLedger = lazy(() => import('../pages/VatLedger'));
 const CoatBoard = lazy(() => import('../pages/CoatBoard'));
 const RoomLog = lazy(() => import('../pages/RoomLog'));
 const PolishBoard = lazy(() => import('../pages/PolishBoard'));
@@ -18,6 +19,7 @@ const ExportView = lazy(() => import('../pages/ExportView'));
 /** ROUTES 常量：页面与导航统一引用，避免散落硬编码 */
 export const ROUTES = {
   bodies: '/bodies',
+  vats: '/vats',
   coats: '/coats',
   rooms: '/rooms',
   polish: '/polish',
@@ -47,6 +49,7 @@ export const appRoutes: RouteObject[] = [
     children: [
       { index: true, element: <Navigate to={ROUTES.bodies} replace /> },
       { path: 'bodies', element: withSuspense(<BodyList />) },
+      { path: 'vats', element: withSuspense(<VatLedger />) },
       { path: 'coats', element: withSuspense(<CoatBoard />) },
       { path: 'rooms', element: withSuspense(<RoomLog />) },
       { path: 'polish', element: withSuspense(<PolishBoard />) },

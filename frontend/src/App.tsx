@@ -12,12 +12,14 @@ import {
   DashboardOutlined,
   ExportOutlined,
   FormatPainterOutlined,
+  GoldOutlined,
   HighlightOutlined,
 } from '@ant-design/icons';
 import { ROUTES } from './router';
 import { useBodyStore } from './stores/bodyStore';
 import { useCoatStore } from './stores/coatStore';
 import { useRoomStore } from './stores/roomStore';
+import { useVatStore } from './stores/vatStore';
 import { initDatabase } from './utils/db';
 import { BODY_MATERIAL_LABEL, BODY_SHAPE_LABEL, BODY_STATE_LABEL } from './types/body';
 
@@ -35,6 +37,9 @@ export default function App() {
   const loadCoats = useCoatStore((state) => state.loadCoats);
   const rooms = useRoomStore((state) => state.rooms);
   const loadRooms = useRoomStore((state) => state.loadRooms);
+  const vats = useVatStore((state) => state.vats);
+  const loadVats = useVatStore((state) => state.loadVats);
+  const loadRecons = useVatStore((state) => state.loadRecons);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,7 +47,7 @@ export default function App() {
       try {
         await initDatabase();
         if (cancelled) return;
-        await Promise.all([loadBodies(), loadCoats(), loadRooms()]);
+        await Promise.all([loadBodies(), loadCoats(), loadRooms(), loadVats(), loadRecons()]);
       } catch (error) {
         if (cancelled) return;
         message.error(`本地数据库初始化失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -51,20 +56,22 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadBodies, loadCoats, loadRooms, message]);
+  }, [loadBodies, loadCoats, loadRooms, loadVats, loadRecons, message]);
 
   const currentBody = bodies.find((body) => body.id === currentBodyId) ?? null;
-  const selectedKey = location.pathname.startsWith('/coats')
-    ? ROUTES.coats
-    : location.pathname.startsWith('/rooms')
-      ? ROUTES.rooms
-      : location.pathname.startsWith('/polish')
-        ? ROUTES.polish
-        : location.pathname.startsWith('/inlays')
-          ? ROUTES.inlays
-          : location.pathname.startsWith('/export')
-            ? ROUTES.export
-            : ROUTES.bodies;
+  const selectedKey = location.pathname.startsWith('/vats')
+    ? ROUTES.vats
+    : location.pathname.startsWith('/coats')
+      ? ROUTES.coats
+      : location.pathname.startsWith('/rooms')
+        ? ROUTES.rooms
+        : location.pathname.startsWith('/polish')
+          ? ROUTES.polish
+          : location.pathname.startsWith('/inlays')
+            ? ROUTES.inlays
+            : location.pathname.startsWith('/export')
+              ? ROUTES.export
+              : ROUTES.bodies;
 
   return (
     <Layout style={{ minHeight: '100vh', background: 'transparent' }}>
@@ -85,6 +92,7 @@ export default function App() {
           onClick={({ key }) => navigate(key)}
           items={[
             { key: ROUTES.bodies, icon: <AppstoreOutlined />, label: '胎体与器型' },
+            { key: ROUTES.vats, icon: <GoldOutlined />, label: '调漆间' },
             { key: ROUTES.coats, icon: <FormatPainterOutlined />, label: '髹涂道次' },
             { key: ROUTES.rooms, icon: <CloudOutlined />, label: '荫房记录' },
             { key: ROUTES.polish, icon: <BgColorsOutlined />, label: '打磨推光' },
@@ -97,6 +105,7 @@ export default function App() {
             <span>
               <DashboardOutlined /> 胎体 {bodies.length} 件
             </span>
+            <span>调漆缸 {vats.length} 缸</span>
             <span>髹涂道次 {coats.length} 道</span>
             <span>荫房记录 {rooms.length} 条</span>
           </Space>

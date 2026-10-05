@@ -1,8 +1,8 @@
 # 漆器髹涂工序与荫房环境档案（gblacquer）
 
-面向漆艺工作室工序管理员的本地化档案工具：把每件漆器的髹涂道次、荫干时长与打磨推光逐道记录，并同步留存荫房温湿度，作为漆层缺陷回溯依据。
+面向漆艺工作室工序管理员的本地化档案工具：把每件漆器的髹涂道次、荫干时长与打磨推光逐道记录，并同步留存荫房温湿度，作为漆层缺陷回溯依据；调漆间按缸登记当天现调的漆，髹涂组领用按缸扣减，两边按缸号对账。
 
-核心动作：**登记胎体与器型 → 编排髹涂道次与漆种 → 记录荫房温湿度 → 登记打磨与推光 → 登记镶嵌纹饰 → 成品质检与导出**。
+核心动作：**登记胎体与器型 → 调漆间登记调漆缸 → 编排髹涂道次并领用漆缸 → 记录荫房温湿度 → 登记打磨与推光 → 登记镶嵌纹饰 → 成品质检与导出**。
 
 纯前端单页应用（React 18 + TypeScript + Ant Design + Vite + Zustand + React Router），**无后端、无数据库服务、无 API 服务**，全部数据保存在浏览器本地（IndexedDB / Dexie + 少量 localStorage 元数据），刷新或重启浏览器后依然存在。
 
@@ -42,7 +42,7 @@ docker compose up -d --build      # 代码改动后重新构建
 | 语言 | TypeScript（`strict: true`，`noUnusedLocals`） | `npm run build` 内含 `tsc --noEmit` 类型检查 |
 | UI 组件库 | Ant Design 5（含 `@ant-design/icons`） | 表格、表单、对话框、拖拽排序、徽标 |
 | 构建工具 | Vite 5 | 开发服务器端口 22818 |
-| 状态管理 | Zustand 4 | `bodyStore` / `coatStore` / `roomStore` |
+| 状态管理 | Zustand 4 | `bodyStore` / `coatStore` / `roomStore` / `vatStore` |
 | 路由 | React Router 6（`createBrowserRouter`，history 模式） | nginx 侧配合 `try_files` 做 SPA fallback |
 | 本地存储 | Dexie 4（IndexedDB 封装）+ localStorage | 含数据结构版本号与 v1→v2 升级迁移 |
 | 容器化 | Docker 多阶段构建：`node:20-alpine` → `nginx:alpine` | 构建阶段类型检查 + 打包，运行阶段仅托管静态产物 |
@@ -68,7 +68,8 @@ npm run preview    # 本地预览构建产物（http://localhost:22818）
 | 路由 | 页面 | 主要职责 | 消费模型 |
 | --- | --- | --- | --- |
 | `/bodies` | 胎体与器型台账 | 新建胎体、按材质与器型筛选（同步 URL query），卡片回显已完成道次与最近荫房记录 | Body、Coat、Room |
-| `/coats` | 髹涂道次编排 | 拖拽调整道次先后并重编号、批量改漆种与状态、同器型自动带出上次漆种与间隔建议 | Coat、Body |
+| `/vats` | 调漆间台账 | 按缸登记漆种、配方与容量；髹涂组领用扣减、容量用满排队等下一缸；结皮作废退回未涂道次；按缸号对账与挂起核销 | Vat、ReconItem、Coat、Body |
+| `/coats` | 髹涂道次编排 | 拖拽调整道次先后并重编号、批量改漆种与状态、同器型自动带出上次漆种与间隔建议、逐道领用漆缸 | Coat、Body、Vat |
 | `/rooms` | 荫房温湿度记录 | 按区间判定适宜 / 偏干 / 偏湿，越界回写关联道次为「待复检」，支持日期区间筛选 | Room、Coat |
 | `/polish` | 打磨与推光工序 | 按道次生成目数序列（320→2000），未打磨完的道次禁止进入下一道罩漆 | Polish、Coat |
 | `/inlays` | 镶嵌纹饰登记 | 螺钿 / 蛋壳 / 描金 / 戗金登记与批量调整分类，器型示意区叠加显示 | Inlay、Body |
@@ -83,13 +84,15 @@ npm run preview    # 本地预览构建产物（http://localhost:22818）
 | 模型 | 文件 | 关键字段 | 说明 |
 | --- | --- | --- | --- |
 | Body 胎体 | `src/types/body.ts` | `id` `code` `material`（木/脱胎/金属） `shape`（碗/盘/盒/瓶） `sizeMm` `ownerName` `state`（待髹涂/髹涂中/待荫干/已完成） | 新建后进入道次编排，卡片回显进度与最近荫房 |
-| Coat 髹涂道次 | `src/types/coat.ts` | `id` `bodyId` `seq` `paintType`（生漆/色漆/罩漆） `colorName` `coatDate` `thicknessUm` `state`（待涂/已涂/待打磨/已完成） `needRecheck` | 拖拽调序，同器型带出上次漆种与间隔建议 |
+| Coat 髹涂道次 | `src/types/coat.ts` | `id` `bodyId` `seq` `paintType`（生漆/色漆/罩漆） `colorName` `coatDate` `thicknessUm` `state`（待涂/已涂/待打磨/已完成） `needRecheck` `vatId` `drawCoats` `drawState` `awaitVat` `shortageCoats` | 拖拽调序；逐道领用漆缸，余量不足排队等下一缸并记还差几道 |
+| Vat 调漆缸 | `src/types/vat.ts` | `id` `vatNo` 缸号 `paintType` `formula` 配方 `capacityCoats` 容量（道） `mixedDate` `state`（在用/已用完/已作废） | 当天现调按缸登记；余量由领用记录派生；结皮作废只改状态，台账不动 |
+| ReconItem 对账挂起单 | `src/types/recon.ts` | `id` `vatId` `vatNo` `capacityCoats`（调漆间账） `drawnCoats`（髹涂组账） `returnedCoats` `reason` `state`（挂起待核/已核销） `resolvedBy` `resolveNote` | 按缸号对账，对不上的先挂起等人工定夺核销 |
 | Room 荫房记录 | `src/types/room.ts` | `id` `bodyId` `date` `tempC` `humidityPct` `inAt` `outAt` `verdict`（适宜/偏干/偏湿） | 越界即回写关联道次为待复检 |
 | Polish 打磨推光 | `src/types/polish.ts` | `id` `bodyId` `seq` `grit` `method`（水砂/推光/揩清） `durationMin` `operator` | 按道次生成目数序列 |
 | Inlay 镶嵌 | `src/types/inlay.ts` | `id` `bodyId` `type`（螺钿/蛋壳/描金/戗金） `pattern` `position` `materialNote` | 器型示意区叠加显示，支持批量改分类 |
 | Inspect 质检 | `src/types/inspect.ts` | `id` `bodyId` `verdict`（合格/返工） `defectNote` `inspector` `date` `defectCoatSeq` `defectRoomId` | 返工定位到道次与荫房记录并生成返工清单 |
 
-数据结构版本号 `DB_SCHEMA_VERSION` 定义在 `src/utils/db.ts`，当前为 `v2`：`coats` 表增加 `paintType` 索引，并在 Dexie `.upgrade()` 中为历史记录回填 `paintType = 'raw'`、`needRecheck = false`、`thicknessUm = 40`。
+数据结构版本号 `DB_SCHEMA_VERSION` 定义在 `src/utils/db.ts`，当前为 `v3`：`v1→v2` 为 `coats` 表增加 `paintType` 索引并回填历史记录；`v2→v3` 新增 `vats`（调漆缸）与 `recons`（对账挂起单）两张表，`coats` 增加 `vatId` 索引与领用字段，旧道次没记缸号的按漆种和涂刷日期回填（同漆种、调漆日期不早于涂刷日期、一缸装满换下一缸），填不上的标历史缸号 `HIST`；待涂道次尚未领漆，不回填，走正常领用流程。
 
 ---
 
@@ -99,11 +102,11 @@ npm run preview    # 本地预览构建产物（http://localhost:22818）
 sologsb101-1018/
 ├── frontend/                     # 前端源码
 │   ├── src/
-│   │   ├── types/                # body.ts coat.ts room.ts polish.ts inlay.ts inspect.ts
-│   │   ├── stores/               # bodyStore.ts coatStore.ts roomStore.ts
-│   │   ├── components/common/    # StageTag.tsx FilterBar.tsx StatBadge.tsx EmptyPanel.tsx
+│   │   ├── types/                # body.ts coat.ts vat.ts recon.ts room.ts polish.ts inlay.ts inspect.ts
+│   │   ├── stores/               # bodyStore.ts coatStore.ts roomStore.ts vatStore.ts
+│   │   ├── components/common/    # StageTag.tsx FilterBar.tsx StatBadge.tsx EmptyPanel.tsx VatDrawModal.tsx
 │   │   ├── hooks/                # useCoatProgress.ts useIdbTable.ts
-│   │   ├── pages/                # BodyList.tsx CoatBoard.tsx RoomLog.tsx PolishBoard.tsx InlayBoard.tsx ExportView.tsx
+│   │   ├── pages/                # BodyList.tsx VatLedger.tsx CoatBoard.tsx RoomLog.tsx PolishBoard.tsx InlayBoard.tsx ExportView.tsx
 │   │   ├── router/               # index.tsx
 │   │   ├── utils/                # humidity.ts db.ts export.ts
 │   │   ├── styles/               # main.css
@@ -125,9 +128,10 @@ sologsb101-1018/
 
 ## 七、数据存储说明
 
-- **IndexedDB（Dexie，数据库名 `gblacquer`）**：6 张业务表 `bodies` / `coats` / `rooms` / `polishes` / `inlays` / `inspects`，由 `src/utils/db.ts` 统一定义 schema、版本号与升级迁移；`initDatabase()` 在首次打开时自动播种**三层互相引用**的演示数据（Body → Coat / Room → Polish / Inlay / Inspect，固定 id 如 `body_01`、`coat_0101`），播种幂等。
+- **IndexedDB（Dexie，数据库名 `gblacquer`）**：8 张业务表 `bodies` / `coats` / `rooms` / `polishes` / `inlays` / `inspects` / `vats` / `recons`，由 `src/utils/db.ts` 统一定义 schema、版本号与升级迁移；`initDatabase()` 在首次打开时自动播种**三层互相引用**的演示数据（Body → Coat / Room → Polish / Inlay / Inspect，固定 id 如 `body_01`、`coat_0101`），播种幂等。播种的道次模拟旧数据（未记缸号），落库后按漆种与涂刷日期回填调漆缸，填不上的标历史缸号 `HIST`。
+- **调漆间 ↔ 髹涂组口径**：缸的「当下余量」不落地存储，一律按 `容量 − 有效领用合计` 派生，两边看到的是同一本账；领用即扣，余量不足时道次进入等漆队列并记「还差几道」；缸结皮作废后，未涂道次的领用退回（道次回到待涂），已涂道次照旧保留，调漆间台账不动；「发起对账」按缸号核对调漆间账（容量）与髹涂组账（领用），对不上的生成挂起单（同缸不重复挂单），人工定夺后核销留档。
 - **localStorage**：仅存元数据 —— `gblacquer:db-version`（本地结构版本）、`gblacquer:last-backup-at`（最近导出时间）、`gblacquer:ui-prefs`（当前选中胎体）。
-- **备份**：`/export` 页可导出 JSON（6 张表全量数据 + 结构版本号），导入时校验 `app` 字段与各集合数组完整性，覆盖导入前二次确认；另有返工清单 TXT 与工序台账 CSV。
+- **备份**：`/export` 页可导出 JSON（8 张表全量数据 + 结构版本号），导入时校验 `app` 字段与各集合数组完整性（v3 之前的旧备份缺少 `vats` / `recons` 集合时按空处理并补默认值），覆盖导入前二次确认；另有返工清单 TXT 与工序台账 CSV（含领用缸号列）。
 - **隐私与无状态**：数据不上传任何服务器，容器不挂载命名卷；清理浏览器站点数据或更换浏览器会丢失档案，请定期导出备份。
 
 ---
