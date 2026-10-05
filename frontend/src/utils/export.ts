@@ -6,10 +6,14 @@ import type { Body } from '@/types/body';
 import type { Coat } from '@/types/coat';
 import type { Room } from '@/types/room';
 import type { Inspect } from '@/types/inspect';
+import type { Vat } from '@/types/vat';
 import { BODY_MATERIAL_LABEL, BODY_SHAPE_LABEL } from '@/types/body';
 import { COAT_STATE_LABEL, PAINT_TYPE_LABEL } from '@/types/coat';
 import { ROOM_VERDICT_LABEL } from '@/types/room';
 import { INSPECT_VERDICT_LABEL } from '@/types/inspect';
+import { VAT_STATE_LABEL } from '@/types/vat';
+import { LEGACY_VAT_ID } from '@/types/vat';
+import { computeVatUsage } from '@/utils/vat';
 import type { LacquerSnapshot } from './db';
 
 /** 触发浏览器下载 */
@@ -133,6 +137,36 @@ export function exportLedgerCsv(bodies: Body[], coats: Coat[], rooms: Room[]): s
   });
   const filename = `漆器髹涂台账-${stampSuffix()}.csv`;
   download(filename, `\uFEFF${lines.join('\n')}`, 'text/csv;charset=utf-8');
+  return filename;
+}
+
+/** 调漆缸台账 CSV（缸号 / 漆种 / 配方 / 容量 / 已用 / 余量 / 状态），用于按缸号对账 */
+export function exportVatLedgerCsv(vats: Vat[], coats: Coat[]): string {
+  const header = ['缸号', '漆种', '配方', '调制日期', '容量(道)', '已用(道)', '余量(道)', '状态'];
+  const lines: string[] = [header.map(csvCell).join(',')];
+  vats
+    .filter((vat) => vat.id !== LEGACY_VAT_ID)
+    .sort((a, b) => b.mixedAt.localeCompare(a.mixedAt))
+    .forEach((vat) => {
+      const usage = computeVatUsage(coats, vat.id);
+      const remaining = vat.capacity - usage;
+      lines.push(
+        [
+          vat.code,
+          PAINT_TYPE_LABEL[vat.paintType],
+          vat.formula,
+          vat.mixedAt,
+          vat.capacity,
+          usage,
+          remaining,
+          VAT_STATE_LABEL[vat.state],
+        ]
+          .map(csvCell)
+          .join(','),
+      );
+    });
+  const filename = `调漆缸台账-${stampSuffix()}.csv`;
+  download(filename, `﻿${lines.join('\n')}`, 'text/csv;charset=utf-8');
   return filename;
 }
 

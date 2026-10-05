@@ -36,6 +36,7 @@ import StageTag from '@/components/common/StageTag';
 import { useCoatProgress } from '@/hooks/useCoatProgress';
 import { useBodyStore } from '@/stores/bodyStore';
 import { useCoatStore } from '@/stores/coatStore';
+import { useVatStore } from '@/stores/vatStore';
 import {
   COAT_STATE_LABEL,
   COAT_STATE_OPTIONS,
@@ -49,7 +50,9 @@ import {
   type PaintType,
 } from '@/types/coat';
 import { BODY_SHAPE_LABEL } from '@/types/body';
+import { LEGACY_VAT_ID } from '@/types/vat';
 import { suggestIntervalHours } from '@/utils/humidity';
+import { vatShortage } from '@/utils/vat';
 
 const FILTER_KEYS = ['paintType', 'state'] as const;
 
@@ -75,6 +78,9 @@ export default function CoatBoard() {
   const nextSeq = useCoatStore((state) => state.nextSeq);
   const suggestForBody = useCoatStore((state) => state.suggestForBody);
 
+  const loadVats = useVatStore((state) => state.loadVats);
+  const activeVats = useVatStore((state) => state.activeVats);
+  const vatById = useVatStore((state) => state.vatById);
   const { progressOf, currentCoatText, totals } = useCoatProgress();
   const url = useFilterQuery(FILTER_KEYS);
 
@@ -92,6 +98,10 @@ export default function CoatBoard() {
   useEffect(() => {
     if (!currentBodyId && bodies.length > 0) setCurrentBodyId(bodies[0]!.id);
   }, [bodies, currentBodyId, setCurrentBodyId]);
+
+  useEffect(() => {
+    void loadVats();
+  }, [loadVats]);
 
   const bodyCoats = useMemo(
     () => coats.filter((coat) => coat.bodyId === bodyId).sort((a, b) => a.seq - b.seq),
@@ -115,6 +125,12 @@ export default function CoatBoard() {
 
   const suggestion = bodyId.length > 0 ? suggestForBody(bodyId) : null;
   const stat = bodyId.length > 0 ? progressOf(bodyId) : null;
+
+  const watchedVatId = Form.useWatch('vatId', form) as string | null | undefined;
+  const watchedVatUsage = Form.useWatch('vatUsage', form) as number | undefined;
+  const watchedPaintType = Form.useWatch('paintType', form) as PaintType | undefined;
+  const watchedVat = watchedVatId ? vatById(watchedVatId) : undefined;
+  const watchedShortage = watchedVat ? vatShortage(watchedVat, coats, watchedVatUsage ?? 1) : 0;
 
   const openCreate = (): void => {
     if (!bodyId) {
@@ -140,6 +156,10 @@ export default function CoatBoard() {
       thicknessUm: coat.thicknessUm,
       state: coat.state,
       needRecheck: coat.needRecheck,
+      vatId: coat.vatId,
+      vatUsage: coat.vatUsage,
+      vatPending: coat.vatPending,
+      vatBackfilled: coat.vatBackfilled,
     });
     setOpen(true);
   };
@@ -226,6 +246,30 @@ export default function CoatBoard() {
       dataIndex: 'thicknessUm',
       width: 120,
       render: (value: number) => `${value} μm`,
+    },
+    {
+      title: '领用缸号',
+      dataIndex: 'vatId',
+      width: 150,
+      render: (value: string | null, record) => {
+        if (!value) return <Typography.Text type="secondary">未领用</Typography.Text>;
+        if (value === LEGACY_VAT_ID) return <Tag>历史缸号</Tag>;
+        const vat = vatById(value);
+        if (!vat) return <Tag color="error">缸号失效</Tag>;
+        const shortage = vatShortage(vat, coats, record.vatUsage);
+        return (
+          <Space size={4} direction="vertical" style={{ lineHeight: 1.2 }}>
+            <Tag color="#8c2f1f">{vat.code}</Tag>
+            {record.vatPending ? (
+              <Tag color="warning">排队{shortage > 0 ? `·差${shortage}道` : ''}</Tag>
+            ) : (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                用 {record.vatUsage} 道
+              </Typography.Text>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: '操作',
@@ -451,6 +495,40 @@ export default function CoatBoard() {
               ]}
             />
           </Form.Item>
+          <Space size={12} style={{ display: 'flex' }}>
+            <Form.Item name="vatId" label="领用调漆缸" style={{ flex: 1 }}>
+              <Select
+                allowClear
+                showSearch
+                placeholder="选择在用缸"
+                optionFilterProp="label"
+                options={activeVats()
+                  .filter((vat) => !watchedPaintType || vat.paintType === watchedPaintType)
+                  .map((vat) => {
+                    const remaining = useVatStore.getState().vatRemainingOf(vat.id, coats);
+                    return {
+                      value: vat.id,
+                      label: `${vat.code} · ${PAINT_TYPE_LABEL[vat.paintType]} · 余 ${remaining ?? 0} 道`,
+                    };
+                  })}
+              />
+            </Form.Item>
+            <Form.Item name="vatUsage" label="用掉几道" style={{ flex: 1 }}>
+              <InputNumber min={1} max={99} style={{ width: '100%' }} />
+            </Form.Item>
+          </Space>
+          {watchedVat ? (
+            <Alert
+              type={watchedShortage > 0 ? 'warning' : 'info'}
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={
+                watchedShortage > 0
+                  ? `该缸余量不足，将排队等下一缸（还差 ${watchedShortage} 道）`
+                  : `${watchedVat.code} 当下余量 ${useVatStore.getState().vatRemainingOf(watchedVat.id, coats) ?? 0} 道，领用 ${watchedVatUsage ?? 1} 道后扣减`
+              }
+            />
+          ) : null}
           <Alert
             type="warning"
             showIcon

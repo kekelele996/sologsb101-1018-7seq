@@ -37,6 +37,7 @@ import { useIdbTable } from '@/hooks/useIdbTable';
 import { useBodyStore } from '@/stores/bodyStore';
 import { useCoatStore } from '@/stores/coatStore';
 import { useRoomStore } from '@/stores/roomStore';
+import { useVatStore } from '@/stores/vatStore';
 import { COAT_STATE_LABEL, PAINT_TYPE_LABEL } from '@/types/coat';
 import { BODY_SHAPE_LABEL } from '@/types/body';
 import { ROOM_VERDICT_LABEL } from '@/types/room';
@@ -60,7 +61,7 @@ import {
   writeLastBackupAt,
   type LacquerSnapshot,
 } from '@/utils/db';
-import { buildReworkList, copyText, exportLedgerCsv, exportReworkList, exportSnapshotJson } from '@/utils/export';
+import { buildReworkList, copyText, exportLedgerCsv, exportReworkList, exportSnapshotJson, exportVatLedgerCsv } from '@/utils/export';
 
 export default function ExportView() {
   const { message, modal } = AntdApp.useApp();
@@ -385,6 +386,14 @@ export default function ExportView() {
                   }}
                 >
                   工序台账 CSV
+                </Button>
+                <Button
+                  onClick={() => {
+                    const filename = exportVatLedgerCsv(useVatStore.getState().vats, coats);
+                    message.success(`已导出 ${filename}`);
+                  }}
+                >
+                  调漆缸台账 CSV
                 </Button>
               </Space>
               <Alert

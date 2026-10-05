@@ -27,6 +27,14 @@ export interface Coat {
   state: CoatState;
   /** 荫房判定异常时回写的「待复检」标记 */
   needRecheck: boolean;
+  /** 领用缸号（调漆缸 id）；历史数据可能为空 */
+  vatId: string | null;
+  /** 本道次从领用缸中用掉几道（默认 1） */
+  vatUsage: number;
+  /** 容量用满排队等下一缸：true 表示当前无缸可用、待下一缸 */
+  vatPending: boolean;
+  /** 升级回填标记：旧数据按漆种与涂刷日期回填缸号，匹配不上的标历史缸号 */
+  vatBackfilled: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -91,5 +99,9 @@ export function createEmptyCoatDraft(bodyId: string, seq: number): CoatDraft {
     thicknessUm: 40,
     state: 'todo',
     needRecheck: false,
+    vatId: null,
+    vatUsage: 1,
+    vatPending: false,
+    vatBackfilled: false,
   };
 }

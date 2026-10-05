@@ -7,7 +7,9 @@ import { db, createId } from '@/utils/db';
 import type { Coat, CoatDraft, CoatState, PaintType } from '@/types/coat';
 import { nextCoatState } from '@/types/coat';
 import { suggestIntervalHours, suggestPaintType } from '@/utils/humidity';
+import { shouldBeVatPending } from '@/utils/vat';
 import { useBodyStore } from './bodyStore';
+import { useVatStore } from './vatStore';
 
 export interface PaintSuggestion {
   paintType: PaintType;
@@ -60,14 +62,29 @@ export const useCoatStore = create<CoatStoreState>((set, get) => ({
 
   async createCoat(draft) {
     const now = Date.now();
-    const row: Coat = { ...draft, id: createId('coat'), createdAt: now, updatedAt: now };
+    const vat = draft.vatId ? useVatStore.getState().vatById(draft.vatId) : undefined;
+    const vatPending = shouldBeVatPending(vat, get().coats, draft.vatUsage ?? 1);
+    const row: Coat = {
+      ...draft,
+      vatId: draft.vatId ?? null,
+      vatUsage: draft.vatUsage ?? 1,
+      vatPending,
+      vatBackfilled: draft.vatBackfilled ?? false,
+      id: createId('coat'),
+      createdAt: now,
+      updatedAt: now,
+    };
     await db.coats.put(row);
     await get().loadCoats();
     return row;
   },
 
   async updateCoat(id, patch) {
-    await db.coats.update(id, { ...patch, updatedAt: Date.now() } as never);
+    const current = get().coats.find((coat) => coat.id === id);
+    const merged = { ...current, ...patch } as Coat;
+    const vat = merged.vatId ? useVatStore.getState().vatById(merged.vatId) : undefined;
+    const vatPending = shouldBeVatPending(vat, get().coats, merged.vatUsage ?? 1, id);
+    await db.coats.update(id, { ...patch, vatPending, updatedAt: Date.now() } as never);
     await get().loadCoats();
   },
 
